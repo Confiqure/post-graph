@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>My Liked Posts Organizer</title>
+  <!-- Optional: Include Bootstrap for quick styling -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+  />
+  <style>
+    /* Basic styling for the D3 chart area */
+    .chart {
+      width: 100%;
+      height: 600px;
+      border: 1px solid #ccc;
+      overflow: hidden;
+      position: relative;
+      margin-top: 1rem;
+    }
+
+    .node circle {
+      fill: #999;
+      cursor: pointer;
+      stroke-width: 2;
+    }
+
+    .node text {
+      font: 12px sans-serif;
+      fill: #333;
+    }
+
+    .link {
+      fill: none;
+      stroke: #ccc;
+      stroke-width: 1.5px;
+    }
+  </style>
+</head>
+<body class="p-4">
+  <div class="container">
+    <h1>My Liked Posts Organizer</h1>
+
+    <!-- Random Uncategorized Post Section -->
+    <div class="mt-4">
+      <h3>Random Uncategorized Post</h3>
+      <div class="mb-3">
+        <button id="fetch-post-btn" class="btn btn-primary">
+          Get Random Uncategorized Post
+        </button>
+      </div>
+      <div id="post-display" class="mb-3">
+        <!-- Post info appears here -->
+      </div>
+
+      <!-- Category selection UI -->
+      <div class="mb-3">
+        <label for="category-select" class="form-label">Assign Category:</label>
+        <select id="category-select" class="form-select" style="width: 500px;">
+          <option value="">-- No Category --</option>
+        </select>
+      </div>
+      <button id="assign-btn" class="btn btn-success" disabled>Assign Category</button>
+    </div>
+
+    <!-- Categories Visualization Section -->
+    <div class="mt-5">
+      <h3>Category Hierarchy</h3>
+      <div id="categories-graph" class="chart"></div>
+    </div>
+  </div>
+
+  <!-- D3.js (for category hierarchy visualization) -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <script>
+    // Store current post data in a global var for now
+    let currentPostId = null;
+
+    // 1) On page load, fetch categories to populate the dropdown
+    window.addEventListener("DOMContentLoaded", async () => {
+      await populateCategoryDropdown();
+      // Also fetch the category hierarchy JSON to build the tree
+      await drawCategoryTree();
+    });
+
+    // Fetch the random uncategorized post
+    const fetchPostBtn = document.getElementById("fetch-post-btn");
+    fetchPostBtn.addEventListener("click", async () => {
+      const response = await fetch("/random_uncategorized");
+      if (response.ok) {
+        const data = await response.json();
+        currentPostId = data.id;
+        document.getElementById("post-display").innerHTML = `
+          <div><strong>Post ID:</strong> ${data.post_id}</div>
+          <div><strong>Username:</strong> ${data.username}</div>
+          <div><strong>Content:</strong> ${data.content}</div>
+          <div><a href="${data.post_url}" target="_blank">View Post</a></div>
+        `;
+        document.getElementById("assign-btn").disabled = false;
+      } else {
+        document.getElementById("post-display").innerHTML =
+          "<em>No uncategorized posts found.</em>";
+        currentPostId = null;
+        document.getElementById("assign-btn").disabled = true;
+      }
+    });
+
+    // Populate the category dropdown from /categories
+    async function populateCategoryDropdown() {
+        const catSelect = document.getElementById("category-select");
+        catSelect.innerHTML = '<option value="">-- No Category --</option>';
+      
+        try {
+          const response = await fetch("/categories");
+          if (response.ok) {
+            const categories = await response.json(); // Expecting an array of categories
+
+            // Sort categories by full path
+            categories.sort((a, b) => a.full_path.localeCompare(b.full_path));
+      
+            for (const cat of categories) {
+              let option = document.createElement("option");
+              option.value = cat.id;
+              option.textContent = cat.full_path;
+              catSelect.appendChild(option);
+            }
+          }
+        } catch (err) {
+          console.error("Error fetching categories:", err);
+        }
+      }
+
+    // Assign category to the current post
+    const assignBtn = document.getElementById("assign-btn");
+    assignBtn.addEventListener("click", async () => {
+      const catSelect = document.getElementById("category-select");
+      const categoryId = catSelect.value;
+      if (!currentPostId) return;
+
+      try {
+        const response = await fetch("/assign_category", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            post_id: currentPostId,
+            category_id: categoryId !== "" ? parseInt(categoryId) : null,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          alert(data.message);
+          document.getElementById("post-display").innerHTML = "";
+          currentPostId = null;
+          assignBtn.disabled = true;
+        } else {
+          alert("Failed to assign category.");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Error assigning category.");
+      }
+    });
+
+    // 2) Render a D3 Collapsible Tree of categories
+    async function drawCategoryTree() {
+      let treeData = [];
+      try {
+        const res = await fetch("/categories/json");
+        if (res.ok) {
+          treeData = await res.json(); // Expecting an array of root nodes
+        }
+      } catch (err) {
+        console.error("Error fetching category tree data:", err);
+        return;
+      }
+
+      const width = document.getElementById("categories-graph").clientWidth;
+      const height = document.getElementById("categories-graph").clientHeight;
+
+      const svg = d3
+        .select("#categories-graph")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height);
+
+      // Use a group element for our tree layout
+      const g = svg.append("g").attr("transform", "translate(40,40)");
+
+      // Create a D3 tree layout
+      const treemap = d3.tree().size([height - 80, width - 80]);
+
+      // If you have multiple roots in the array, you might need to show them side by side
+      // For simplicity, let's assume treeData has only one root for demonstration:
+      if (treeData.length === 0) return;
+
+      // We'll just show the first root if there's more than one
+      const rootData = treeData[0];
+
+      // Convert data to a D3 hierarchy
+      let root = d3.hierarchy(rootData, (d) => d.children);
+
+      root.x0 = 0;
+      root.y0 = 0;
+
+      // Collapsible tree: recursively collapse children
+      function collapse(d) {
+        if (d.children) {
+          d._children = d.children;
+          d._children.forEach(collapse);
+          d.children = null;
+        }
+      }
+      root.children && root.children.forEach(collapse);
+
+      update(root);
+
+      function update(source) {
+        // Assigns the x and y position for the nodes
+        const treeData = treemap(root);
+        // Compute new tree layout
+        const nodes = treeData.descendants();
+        const links = treeData.links();
+
+        // Normalize for fixed-depth
+        nodes.forEach((d) => (d.y = d.depth * 180));
+
+        // ****************** Nodes section ***************************
+
+        // Update the nodes
+        const node = g.selectAll("g.node").data(nodes, (d) => d.id || (d.id = ++i));
+
+        // Enter new nodes at the source's old position
+        const nodeEnter = node
+          .enter()
+          .append("g")
+          .attr("class", "node")
+          .attr("transform", () => `translate(${source.y0},${source.x0})`)
+          .on("click", click);
+
+        // Add circle for the nodes
+        nodeEnter
+          .append("circle")
+          .attr("r", 6)
+          .style("fill", (d) => (d._children ? "#555" : "#999"));
+
+        // Add labels for the nodes
+        nodeEnter
+          .append("text")
+          .attr("dy", ".35em")
+          .attr("x", (d) => (d.children || d._children ? -13 : 13))
+          .attr("text-anchor", (d) => (d.children || d._children ? "end" : "start"))
+          .text((d) => d.data.name);
+
+        // UPDATE
+        const nodeUpdate = nodeEnter.merge(node);
+
+        // Transition to the proper position
+        nodeUpdate
+          .transition()
+          .duration(200)
+          .attr("transform", (d) => `translate(${d.y},${d.x})`);
+
+        // Update circle style
+        nodeUpdate
+          .select("circle")
+          .attr("r", 6)
+          .style("fill", (d) => (d._children ? "#555" : "#999"));
+
+        // Remove exiting nodes
+        const nodeExit = node
+          .exit()
+          .transition()
+          .duration(200)
+          .attr("transform", () => `translate(${source.y},${source.x})`)
+          .remove();
+
+        // ****************** links section ***************************
+        const link = g.selectAll("path.link").data(links, (d) => d.target.id);
+
+        // Enter new links
+        const linkEnter = link
+          .enter()
+          .insert("path", "g")
+          .attr("class", "link")
+          .attr("d", () => {
+            const o = { x: source.x0, y: source.y0 };
+            return diagonal(o, o);
+          });
+
+        // UPDATE
+        const linkUpdate = linkEnter.merge(link);
+
+        // Transition back to the main path
+        linkUpdate
+          .transition()
+          .duration(200)
+          .attr("d", (d) => diagonal(d.source, d.target));
+
+        // Remove any exiting links
+        link
+          .exit()
+          .transition()
+          .duration(200)
+          .attr("d", () => {
+            const o = { x: source.x, y: source.y };
+            return diagonal(o, o);
+          })
+          .remove();
+
+        // Store old positions for transition
+        nodes.forEach((d) => {
+          d.x0 = d.x;
+          d.y0 = d.y;
+        });
+
+        // Creates a curved (diagonal) path
+        function diagonal(s, t) {
+          return `M ${s.y} ${s.x}
+                  C ${(s.y + t.y) / 2} ${s.x},
+                    ${(s.y + t.y) / 2} ${t.x},
+                    ${t.y} ${t.x}`;
+        }
+
+        // Toggle children on click
+        function click(event, d) {
+          if (d.children) {
+            d._children = d.children;
+            d.children = null;
+          } else {
+            d.children = d._children;
+            d._children = null;
+          }
+          update(d);
+        }
+      }
+    }
+  </script>
+</body>
+</html>
