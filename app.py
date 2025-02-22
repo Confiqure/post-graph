@@ -1,5 +1,6 @@
 import random
 from flask import Flask, render_template, jsonify, request
+from sqlalchemy import func
 from database import SessionLocal
 from models import Post, Category
 
@@ -68,15 +69,33 @@ def list_categories():
 
 @app.route("/categories/json")
 def categories_json():
+    """
+    Returns a hierarchical JSON of categories.
+    If ?show_counts=true is in the query params, each category node will include
+    a 'post_count' field indicating how many posts are directly in that category.
+    """
+    counts = {}
     session = SessionLocal()
+    show_counts = request.args.get("show_counts", "").lower() == "true"
     root_categories = session.query(Category).filter(Category.parent_id == None).all()
 
+    if show_counts:
+        count_data = (
+            session.query(Post.category_id, func.count(Post.id))
+            .group_by(Post.category_id)
+            .all()
+        )
+        counts = {cat_id: count for cat_id, count in count_data}
+
     def build_tree(category):
-        return {
+        node = {
             "id": category.id,
             "name": category.name,
             "children": [build_tree(sub) for sub in category.subcategories],
         }
+        if show_counts:
+            node["post_count"] = counts.get(category.id, 0)
+        return node
 
     data = [build_tree(cat) for cat in root_categories]
     session.close()
